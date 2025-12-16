@@ -145,7 +145,7 @@ def fetch_site(start_date: date, end_date: date):
 
 
 # -------------------------
-# PDF GENERATOR (FIXED WRAPPING)
+# PDF GENERATOR (BULLETPROOF WRAP)
 # -------------------------
 class PDF(FPDF):
     def header(self):
@@ -159,34 +159,58 @@ class PDF(FPDF):
         self.cell(0, 10, f"Page {self.page_no()}", align="C")
 
 
+def _force_wrap_points(s: str, chunk: int = 24) -> str:
+    """
+    Ensures no super-long token can exist without a space.
+    Inserts a space every `chunk` characters for any run without spaces.
+    """
+    if not s:
+        return ""
+
+    parts = s.split(" ")
+    fixed = []
+    for p in parts:
+        if len(p) <= chunk:
+            fixed.append(p)
+        else:
+            # break the long token into chunk-sized pieces
+            fixed.append(" ".join([p[i:i+chunk] for i in range(0, len(p), chunk)]))
+    return " ".join(fixed)
+
 def add_soft_breaks(s: str) -> str:
     """
-    Insert spaces after separators so fpdf2 can wrap long tokens
-    (paths, UUIDs, URLs, etc.) and not crash.
+    Add break opportunities after separators, then force breaks every N chars.
+    This prevents: 'Not enough horizontal space to render a single character'
     """
     if s is None:
         return ""
     s = str(s)
-    # Add "break opportunities" after common separators
-    for ch in ["/", "_", "-", ".", ":", "?", "&", "="]:
+
+    # Add spaces after common separators
+    for ch in ["/", "_", "-", ".", ":", "?", "&", "=", "@"]:
         s = s.replace(ch, ch + " ")
+
+    # Force wrap points even if no separators exist
+    s = _force_wrap_points(s, chunk=24)
     return s
 
-def pdf_safe(text):
-    # Make text latin-1 safe AND add wrap points
+def pdf_safe(text) -> str:
     t = add_soft_breaks("" if text is None else str(text))
+    # latin-1 safe for FPDF
     return t.encode("latin-1", "replace").decode("latin-1")
 
-def add_section_title(pdf, title):
+def add_section_title(pdf: PDF, title: str):
     pdf.set_font("Helvetica", "B", 12)
     pdf.multi_cell(0, 7, pdf_safe(title))
     pdf.ln(1)
 
-def add_kv(pdf, k, v):
+def add_kv(pdf: PDF, k: str, v: str):
+    # Safer than using a narrow fixed-width label cell
     pdf.set_font("Helvetica", "B", 10)
-    pdf.cell(40, 6, pdf_safe(k))
+    pdf.multi_cell(0, 6, pdf_safe(k))
     pdf.set_font("Helvetica", "", 10)
     pdf.multi_cell(0, 6, pdf_safe(v))
+    pdf.ln(1)
 
 def build_pdf(report_title: str, start_date: date, end_date: date, personnel_rows, site_rows) -> bytes:
     pdf = PDF()
@@ -197,19 +221,18 @@ def build_pdf(report_title: str, start_date: date, end_date: date, personnel_row
     pdf.multi_cell(0, 6, pdf_safe(report_title))
     pdf.ln(2)
 
-    add_kv(pdf, "Date range:", f"{iso(start_date)} to {iso(end_date)}")
-    add_kv(pdf, "Generated:", now_iso())
-    pdf.ln(3)
+    add_kv(pdf, "Date range", f"{iso(start_date)} to {iso(end_date)}")
+    add_kv(pdf, "Generated", now_iso())
 
     add_section_title(pdf, "Summary")
-    add_kv(pdf, "Personnel violations:", str(len(personnel_rows)))
-    add_kv(pdf, "Site safety issues:", str(len(site_rows)))
-    pdf.ln(2)
+    add_kv(pdf, "Personnel violations", str(len(personnel_rows)))
+    add_kv(pdf, "Site safety issues", str(len(site_rows)))
 
     add_section_title(pdf, "Personnel Safety Violations")
     if not personnel_rows:
         pdf.set_font("Helvetica", "", 10)
         pdf.multi_cell(0, 6, "None recorded in this range.")
+        pdf.ln(2)
     else:
         for r in personnel_rows:
             pdf.set_font("Helvetica", "B", 10)
@@ -217,22 +240,26 @@ def build_pdf(report_title: str, start_date: date, end_date: date, personnel_row
             pdf.multi_cell(0, 6, pdf_safe(title))
             pdf.set_font("Helvetica", "", 10)
 
-            if r.get("company"): add_kv(pdf, "Company:", r.get("company"))
-            if r.get("trade"): add_kv(pdf, "Trade:", r.get("trade"))
-            if r.get("location"): add_kv(pdf, "Location:", r.get("location"))
+            if r.get("company"):
+                add_kv(pdf, "Company", r.get("company"))
+            if r.get("trade"):
+                add_kv(pdf, "Trade", r.get("trade"))
+            if r.get("location"):
+                add_kv(pdf, "Location", r.get("location"))
 
-            add_kv(pdf, "What happened:", r.get("description") or "")
-            if r.get("corrective"): add_kv(pdf, "Corrective action:", r.get("corrective"))
-            if r.get("evidence_path"): add_kv(pdf, "Evidence path:", r.get("evidence_path"))
+            add_kv(pdf, "What happened", r.get("description") or "")
+            if r.get("corrective"):
+                add_kv(pdf, "Corrective action", r.get("corrective"))
+            if r.get("evidence_path"):
+                add_kv(pdf, "Evidence path", r.get("evidence_path"))
 
             pdf.ln(2)
-
-    pdf.ln(1)
 
     add_section_title(pdf, "Site Safety Issues")
     if not site_rows:
         pdf.set_font("Helvetica", "", 10)
         pdf.multi_cell(0, 6, "None recorded in this range.")
+        pdf.ln(2)
     else:
         for r in site_rows:
             pdf.set_font("Helvetica", "B", 10)
@@ -240,8 +267,9 @@ def build_pdf(report_title: str, start_date: date, end_date: date, personnel_row
             pdf.multi_cell(0, 6, pdf_safe(title))
             pdf.set_font("Helvetica", "", 10)
 
-            add_kv(pdf, "Issue:", r.get("issue") or "")
-            if r.get("photo_path"): add_kv(pdf, "Photo path:", r.get("photo_path"))
+            add_kv(pdf, "Issue", r.get("issue") or "")
+            if r.get("photo_path"):
+                add_kv(pdf, "Photo path", r.get("photo_path"))
 
             pdf.ln(2)
 
