@@ -145,7 +145,7 @@ def fetch_site(start_date: date, end_date: date):
 
 
 # -------------------------
-# PDF GENERATOR
+# PDF GENERATOR (FIXED WRAPPING)
 # -------------------------
 class PDF(FPDF):
     def header(self):
@@ -159,11 +159,23 @@ class PDF(FPDF):
         self.cell(0, 10, f"Page {self.page_no()}", align="C")
 
 
-def pdf_safe(text):
-    if text is None:
+def add_soft_breaks(s: str) -> str:
+    """
+    Insert spaces after separators so fpdf2 can wrap long tokens
+    (paths, UUIDs, URLs, etc.) and not crash.
+    """
+    if s is None:
         return ""
-    # Replace any weird unicode with simple safe characters
-    return str(text).encode("latin-1", "replace").decode("latin-1")
+    s = str(s)
+    # Add "break opportunities" after common separators
+    for ch in ["/", "_", "-", ".", ":", "?", "&", "="]:
+        s = s.replace(ch, ch + " ")
+    return s
+
+def pdf_safe(text):
+    # Make text latin-1 safe AND add wrap points
+    t = add_soft_breaks("" if text is None else str(text))
+    return t.encode("latin-1", "replace").decode("latin-1")
 
 def add_section_title(pdf, title):
     pdf.set_font("Helvetica", "B", 12)
@@ -189,18 +201,13 @@ def build_pdf(report_title: str, start_date: date, end_date: date, personnel_row
     add_kv(pdf, "Generated:", now_iso())
     pdf.ln(3)
 
-    # Summary
-    total_personnel = len(personnel_rows)
-    total_site = len(site_rows)
-
     add_section_title(pdf, "Summary")
-    add_kv(pdf, "Personnel violations:", str(total_personnel))
-    add_kv(pdf, "Site safety issues:", str(total_site))
+    add_kv(pdf, "Personnel violations:", str(len(personnel_rows)))
+    add_kv(pdf, "Site safety issues:", str(len(site_rows)))
     pdf.ln(2)
 
-    # Personnel details
     add_section_title(pdf, "Personnel Safety Violations")
-    if total_personnel == 0:
+    if not personnel_rows:
         pdf.set_font("Helvetica", "", 10)
         pdf.multi_cell(0, 6, "None recorded in this range.")
     else:
@@ -210,28 +217,20 @@ def build_pdf(report_title: str, start_date: date, end_date: date, personnel_row
             pdf.multi_cell(0, 6, pdf_safe(title))
             pdf.set_font("Helvetica", "", 10)
 
-            company = r.get("company") or ""
-            trade = r.get("trade") or ""
-            location = r.get("location") or ""
-            desc = r.get("description") or ""
-            corr = r.get("corrective") or ""
-            evidence_path = r.get("evidence_path") or ""
+            if r.get("company"): add_kv(pdf, "Company:", r.get("company"))
+            if r.get("trade"): add_kv(pdf, "Trade:", r.get("trade"))
+            if r.get("location"): add_kv(pdf, "Location:", r.get("location"))
 
-            if company: add_kv(pdf, "Company:", company)
-            if trade: add_kv(pdf, "Trade:", trade)
-            if location: add_kv(pdf, "Location:", location)
-
-            add_kv(pdf, "What happened:", desc)
-            if corr: add_kv(pdf, "Corrective action:", corr)
-            if evidence_path: add_kv(pdf, "Evidence path:", evidence_path)
+            add_kv(pdf, "What happened:", r.get("description") or "")
+            if r.get("corrective"): add_kv(pdf, "Corrective action:", r.get("corrective"))
+            if r.get("evidence_path"): add_kv(pdf, "Evidence path:", r.get("evidence_path"))
 
             pdf.ln(2)
 
     pdf.ln(1)
 
-    # Site details
     add_section_title(pdf, "Site Safety Issues")
-    if total_site == 0:
+    if not site_rows:
         pdf.set_font("Helvetica", "", 10)
         pdf.multi_cell(0, 6, "None recorded in this range.")
     else:
@@ -241,11 +240,9 @@ def build_pdf(report_title: str, start_date: date, end_date: date, personnel_row
             pdf.multi_cell(0, 6, pdf_safe(title))
             pdf.set_font("Helvetica", "", 10)
 
-            issue = r.get("issue") or ""
-            photo_path = r.get("photo_path") or ""
+            add_kv(pdf, "Issue:", r.get("issue") or "")
+            if r.get("photo_path"): add_kv(pdf, "Photo path:", r.get("photo_path"))
 
-            add_kv(pdf, "Issue:", issue)
-            if photo_path: add_kv(pdf, "Photo path:", photo_path)
             pdf.ln(2)
 
     return pdf.output(dest="S").encode("latin-1")
@@ -407,7 +404,6 @@ with tabs[1]:
         end_date = start_date
         title = f"Daily Safety Report - {iso(start_date)}"
     elif report_type == "Weekly":
-        # default last 7 days
         default_start = today - timedelta(days=6)
         start_date = st.date_input("Start Date", value=default_start)
         end_date = st.date_input("End Date", value=today)
@@ -417,7 +413,7 @@ with tabs[1]:
         end_date = st.date_input("End Date", value=today)
         title = f"Safety Report - {iso(start_date)} to {iso(end_date)}"
 
-    st.caption("This pulls records from Supabase and generates a downloadable PDF.")
+    st.caption("Generates a downloadable PDF from Supabase records.")
 
     if st.button("Generate PDF"):
         try:
