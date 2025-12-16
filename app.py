@@ -6,7 +6,6 @@ from pathlib import Path
 import streamlit as st
 
 # DB
-import psycopg2
 from psycopg2.extras import RealDictCursor
 
 # Supabase Storage
