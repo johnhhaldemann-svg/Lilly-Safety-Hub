@@ -1,2 +1,5 @@
-violation_data/
-*.db
+.streamlit/
+Streamlit/
+secrets.toml
+*.toml
+.env
