@@ -1,3 +1,2 @@
 streamlit
-psycopg2-binary
 supabase
