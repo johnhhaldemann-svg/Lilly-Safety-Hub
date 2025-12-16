@@ -4,11 +4,12 @@ from datetime import datetime, date, timedelta
 from io import BytesIO
 
 import streamlit as st
+import requests
 from supabase import create_client
 
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak, Image
 from reportlab.lib.units import inch
 
 
@@ -80,6 +81,24 @@ def signed_url(path: str, seconds: int = 3600) -> str | None:
     res = supabase.storage.from_(SUPABASE_BUCKET).create_signed_url(path, seconds)
     return res.get("signedURL") if isinstance(res, dict) else None
 
+def try_download_image(url: str) -> BytesIO | None:
+    """
+    Download image bytes for ReportLab Image().
+    Returns BytesIO if OK; None if not an image or download fails.
+    """
+    if not url:
+        return None
+    try:
+        r = requests.get(url, timeout=10)
+        r.raise_for_status()
+        ctype = (r.headers.get("content-type") or "").lower()
+        # Accept common image types
+        if "image/" not in ctype:
+            return None
+        return BytesIO(r.content)
+    except Exception:
+        return None
+
 def show_table_setup_help_if_needed():
     st.info(
         "If this is your first time using the database, you must create two tables in Supabase once.\n\n"
@@ -148,18 +167,45 @@ def fetch_site(start_date: date, end_date: date):
 
 
 # -------------------------
-# PDF (ReportLab) — CLEAN OUTPUT
+# PDF (ReportLab) — CLEAN OUTPUT + EMBED IMAGES
 # -------------------------
 def para(text: str) -> str:
     """
     Escape ONLY user-entered < and > so they can't break Paragraph markup.
-    DO NOT escape & or <b> tags (ReportLab needs real tags).
     """
     if text is None:
         return ""
     s = str(text)
     s = s.replace("<", "&lt;").replace(">", "&gt;")
     return s
+
+def add_image_to_story(story, url: str, max_width_in=6.5, max_height_in=4.0):
+    """
+    Attempts to download and embed an image in the PDF.
+    If it fails, does nothing (we still show the path text).
+    """
+    img_bytes = try_download_image(url)
+    if not img_bytes:
+        return
+
+    try:
+        img = Image(img_bytes)
+        # constrain size
+        max_w = max_width_in * inch
+        max_h = max_height_in * inch
+        img.drawWidth, img.drawHeight = _scale_to_fit(img.imageWidth, img.imageHeight, max_w, max_h)
+        story.append(Spacer(1, 6))
+        story.append(img)
+        story.append(Spacer(1, 8))
+    except Exception:
+        # If ReportLab can't parse it, skip embedding
+        return
+
+def _scale_to_fit(w, h, max_w, max_h):
+    if w <= 0 or h <= 0:
+        return max_w, max_h
+    scale = min(max_w / w, max_h / h, 1.0)
+    return w * scale, h * scale
 
 def build_pdf_report(report_title: str, start_date: date, end_date: date, personnel_rows, site_rows) -> bytes:
     buf = BytesIO()
@@ -182,7 +228,7 @@ def build_pdf_report(report_title: str, start_date: date, end_date: date, person
         "BodyWrap",
         parent=body,
         leading=13,
-        wordWrap="CJK",  # allows splitting long “words” safely
+        wordWrap="CJK",  # helps wrap long paths
     )
 
     story = []
@@ -226,7 +272,13 @@ def build_pdf_report(report_title: str, start_date: date, end_date: date, person
                 story.append(Paragraph(f"<b>Corrective action:</b> {para(r.get('corrective'))}", body_wrap))
 
             if r.get("evidence_path"):
-                story.append(Paragraph(f"<b>Evidence path:</b> {para(r.get('evidence_path'))}", body_wrap))
+                path = r.get("evidence_path")
+                story.append(Paragraph(f"<b>Evidence path:</b> {para(path)}", body_wrap))
+
+                # embed image if evidence is an image
+                url = signed_url(path, seconds=3600)
+                if url:
+                    add_image_to_story(story, url)
 
             story.append(Spacer(1, 10))
 
@@ -247,7 +299,13 @@ def build_pdf_report(report_title: str, start_date: date, end_date: date, person
             story.append(Paragraph(f"<b>Issue:</b> {para(r.get('issue') or '')}", body_wrap))
 
             if r.get("photo_path"):
-                story.append(Paragraph(f"<b>Photo path:</b> {para(r.get('photo_path'))}", body_wrap))
+                path = r.get("photo_path")
+                story.append(Paragraph(f"<b>Photo path:</b> {para(path)}", body_wrap))
+
+                # embed image if photo is an image
+                url = signed_url(path, seconds=3600)
+                if url:
+                    add_image_to_story(story, url)
 
             story.append(Spacer(1, 10))
 
@@ -400,7 +458,7 @@ with tabs[0]:
 # TAB 2: REPORTS (PDF)
 # -------------------------
 with tabs[1]:
-    st.subheader("PDF Reports")
+    st.subheader("PDF Reports (with embedded photos)")
 
     report_type = st.selectbox("Report Type", ["Daily", "Weekly", "Custom Range"])
 
@@ -419,7 +477,7 @@ with tabs[1]:
         end_date = st.date_input("End Date", value=today)
         title = f"Safety Report - {iso(start_date)} to {iso(end_date)}"
 
-    st.caption("Generates a downloadable PDF from Supabase records.")
+    st.caption("Generates a downloadable PDF from Supabase records. If evidence/photos are images, they will be embedded.")
 
     if st.button("Generate PDF"):
         try:
