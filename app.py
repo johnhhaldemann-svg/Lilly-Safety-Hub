@@ -6,8 +6,8 @@ import uuid
 from datetime import datetime
 
 import streamlit as st
-import psycopg
-from psycopg.rows import dict_row
+import psycopg2
+from psycopg2.extras import RealDictCursor
 from supabase import create_client
 
 
@@ -56,12 +56,14 @@ supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 # Database
 # =========================
 def get_db():
-    return psycopg.connect(DATABASE_URL, row_factory=dict_row)
+    return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
 
 
 def init_db():
     with get_db() as conn:
-        conn.execute("""
+        cur = conn.cursor()
+
+        cur.execute("""
         CREATE TABLE IF NOT EXISTS personnel_violations (
             id SERIAL PRIMARY KEY,
             created_at TEXT,
@@ -78,7 +80,7 @@ def init_db():
         );
         """)
 
-        conn.execute("""
+        cur.execute("""
         CREATE TABLE IF NOT EXISTS site_issues (
             id SERIAL PRIMARY KEY,
             created_at TEXT,
@@ -91,6 +93,8 @@ def init_db():
             photo_path TEXT
         );
         """)
+
+        conn.commit()
 
 
 # =========================
@@ -115,7 +119,7 @@ def upload_to_supabase(file, folder):
     return name
 
 
-def get_signed_url(path):
+def signed_url(path):
     if not path:
         return None
     return supabase.storage.from_(SUPABASE_BUCKET).create_signed_url(path, 3600)["signedURL"]
@@ -128,7 +132,7 @@ require_login()
 init_db()
 
 st.title(APP_TITLE)
-st.caption("All data stored securely in Supabase")
+st.caption("Secure safety reporting powered by Supabase")
 
 mode = st.radio(
     "Select Entry Type",
@@ -145,6 +149,7 @@ if mode == "Personnel Safety Violation":
     st.subheader("Personnel Safety Violation")
 
     c1, c2, c3 = st.columns(3)
+
     with c1:
         hard_hat = clean(st.text_input("Hard Hat Number *"))
         company = st.text_input("Company")
@@ -169,9 +174,10 @@ if mode == "Personnel Safety Violation":
             path = upload_to_supabase(evidence, f"people/{hard_hat}")
 
             with get_db() as conn:
-                conn.execute("""
+                cur = conn.cursor()
+                cur.execute("""
                 INSERT INTO personnel_violations
-                VALUES (DEFAULT,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                VALUES (DEFAULT,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 """, (
                     datetime.now().isoformat(),
                     date_event.isoformat(),
@@ -185,10 +191,11 @@ if mode == "Personnel Safety Violation":
                     corrective,
                     path
                 ))
+                conn.commit()
 
             st.success("Personnel violation saved")
             if path:
-                st.link_button("View Evidence", get_signed_url(path))
+                st.link_button("View Evidence", signed_url(path))
 
 
 # =========================
@@ -198,6 +205,7 @@ else:
     st.subheader("Site Safety Issue")
 
     c1, c2, c3 = st.columns(3)
+
     with c1:
         company = st.text_input("Company Responsible *")
         building = st.text_input("Building *")
@@ -220,7 +228,8 @@ else:
             path = upload_to_supabase(photo, folder)
 
             with get_db() as conn:
-                conn.execute("""
+                cur = conn.cursor()
+                cur.execute("""
                 INSERT INTO site_issues
                 VALUES (DEFAULT,%s,%s,%s,%s,%s,%s,%s,%s)
                 """, (
@@ -233,10 +242,11 @@ else:
                     issue,
                     path
                 ))
+                conn.commit()
 
             st.success("Site safety issue saved")
             if path:
-                st.link_button("View Photo", get_signed_url(path))
+                st.link_button("View Photo", signed_url(path))
 
 
 st.divider()
