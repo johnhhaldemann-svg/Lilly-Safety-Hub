@@ -80,7 +80,6 @@ def signed_url(path: str, seconds: int = 3600) -> str | None:
     res = supabase.storage.from_(SUPABASE_BUCKET).create_signed_url(path, seconds)
     return res.get("signedURL") if isinstance(res, dict) else None
 
-
 def show_table_setup_help_if_needed():
     st.info(
         "If this is your first time using the database, you must create two tables in Supabase once.\n\n"
@@ -149,17 +148,17 @@ def fetch_site(start_date: date, end_date: date):
 
 
 # -------------------------
-# PDF (ReportLab) — robust wrapping
+# PDF (ReportLab) — CLEAN OUTPUT
 # -------------------------
 def para(text: str) -> str:
-    """Escape minimal HTML for ReportLab Paragraph."""
+    """
+    Escape ONLY user-entered < and > so they can't break Paragraph markup.
+    DO NOT escape & or <b> tags (ReportLab needs real tags).
+    """
     if text is None:
         return ""
     s = str(text)
-    s = s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-    # Add zero-width break opportunities after separators to help wrap long paths/IDs
-    for ch in ["/", "_", "-", ".", ":", "?", "&", "=", "@"]:
-        s = s.replace(ch, ch + "&#8203;")  # zero-width space
+    s = s.replace("<", "&lt;").replace(">", "&gt;")
     return s
 
 def build_pdf_report(report_title: str, start_date: date, end_date: date, personnel_rows, site_rows) -> bytes:
@@ -177,77 +176,78 @@ def build_pdf_report(report_title: str, start_date: date, end_date: date, person
     styles = getSampleStyleSheet()
     title_style = styles["Title"]
     h_style = styles["Heading2"]
-    subh_style = styles["Heading3"]
     body = styles["BodyText"]
 
     body_wrap = ParagraphStyle(
         "BodyWrap",
         parent=body,
         leading=13,
-        wordWrap="CJK",   # allows splitting long “words”
+        wordWrap="CJK",  # allows splitting long “words” safely
     )
 
     story = []
 
-    story.append(Paragraph(para("Lilly Safety Hub - Safety Report"), title_style))
+    story.append(Paragraph("Lilly Safety Hub - Safety Report", title_style))
     story.append(Spacer(1, 8))
     story.append(Paragraph(para(report_title), body_wrap))
     story.append(Spacer(1, 10))
 
-    story.append(Paragraph(para(f"<b>Date range:</b> {iso(start_date)} to {iso(end_date)}"), body_wrap))
-    story.append(Paragraph(para(f"<b>Generated:</b> {now_iso()}"), body_wrap))
+    story.append(Paragraph(f"<b>Date range:</b> {para(iso(start_date))} to {para(iso(end_date))}", body_wrap))
+    story.append(Paragraph(f"<b>Generated:</b> {para(now_iso())}", body_wrap))
     story.append(Spacer(1, 12))
 
-    story.append(Paragraph(para("Summary"), h_style))
-    story.append(Paragraph(para(f"<b>Personnel violations:</b> {len(personnel_rows)}"), body_wrap))
-    story.append(Paragraph(para(f"<b>Site safety issues:</b> {len(site_rows)}"), body_wrap))
+    story.append(Paragraph("Summary", h_style))
+    story.append(Paragraph(f"<b>Personnel violations:</b> {len(personnel_rows)}", body_wrap))
+    story.append(Paragraph(f"<b>Site safety issues:</b> {len(site_rows)}", body_wrap))
     story.append(Spacer(1, 12))
 
     # Personnel section
-    story.append(Paragraph(para("Personnel Safety Violations"), h_style))
+    story.append(Paragraph("Personnel Safety Violations", h_style))
     story.append(Spacer(1, 6))
+
     if not personnel_rows:
-        story.append(Paragraph(para("None recorded in this range."), body_wrap))
+        story.append(Paragraph("None recorded in this range.", body_wrap))
         story.append(Spacer(1, 10))
     else:
         for r in personnel_rows:
             header = f"{r.get('date_event','')} | HH#{r.get('hard_hat','')} | {r.get('violation_type','')} | {r.get('severity','')}"
-            story.append(Paragraph(para(f"<b>{header}</b>"), body_wrap))
+            story.append(Paragraph(f"<b>{para(header)}</b>", body_wrap))
 
             if r.get("company"):
-                story.append(Paragraph(para(f"<b>Company:</b> {r.get('company')}"), body_wrap))
+                story.append(Paragraph(f"<b>Company:</b> {para(r.get('company'))}", body_wrap))
             if r.get("trade"):
-                story.append(Paragraph(para(f"<b>Trade:</b> {r.get('trade')}"), body_wrap))
+                story.append(Paragraph(f"<b>Trade:</b> {para(r.get('trade'))}", body_wrap))
             if r.get("location"):
-                story.append(Paragraph(para(f"<b>Location:</b> {r.get('location')}"), body_wrap))
+                story.append(Paragraph(f"<b>Location:</b> {para(r.get('location'))}", body_wrap))
 
-            story.append(Paragraph(para(f"<b>What happened:</b> {r.get('description') or ''}"), body_wrap))
+            story.append(Paragraph(f"<b>What happened:</b> {para(r.get('description') or '')}", body_wrap))
 
             if r.get("corrective"):
-                story.append(Paragraph(para(f"<b>Corrective action:</b> {r.get('corrective')}"), body_wrap))
+                story.append(Paragraph(f"<b>Corrective action:</b> {para(r.get('corrective'))}", body_wrap))
 
             if r.get("evidence_path"):
-                story.append(Paragraph(para(f"<b>Evidence path:</b> {r.get('evidence_path')}"), body_wrap))
+                story.append(Paragraph(f"<b>Evidence path:</b> {para(r.get('evidence_path'))}", body_wrap))
 
             story.append(Spacer(1, 10))
 
     story.append(PageBreak())
 
     # Site section
-    story.append(Paragraph(para("Site Safety Issues"), h_style))
+    story.append(Paragraph("Site Safety Issues", h_style))
     story.append(Spacer(1, 6))
+
     if not site_rows:
-        story.append(Paragraph(para("None recorded in this range."), body_wrap))
+        story.append(Paragraph("None recorded in this range.", body_wrap))
         story.append(Spacer(1, 10))
     else:
         for r in site_rows:
             header = f"{r.get('date_event','')} | {r.get('company','')} | {r.get('building','')} | Floor {r.get('floor','')} | {r.get('risk_level','')}"
-            story.append(Paragraph(para(f"<b>{header}</b>"), body_wrap))
+            story.append(Paragraph(f"<b>{para(header)}</b>", body_wrap))
 
-            story.append(Paragraph(para(f"<b>Issue:</b> {r.get('issue') or ''}"), body_wrap))
+            story.append(Paragraph(f"<b>Issue:</b> {para(r.get('issue') or '')}", body_wrap))
 
             if r.get("photo_path"):
-                story.append(Paragraph(para(f"<b>Photo path:</b> {r.get('photo_path')}"), body_wrap))
+                story.append(Paragraph(f"<b>Photo path:</b> {para(r.get('photo_path'))}", body_wrap))
 
             story.append(Spacer(1, 10))
 
