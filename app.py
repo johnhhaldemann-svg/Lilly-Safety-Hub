@@ -1,10 +1,16 @@
 import re
 import uuid
 from datetime import datetime, date, timedelta
+from io import BytesIO
 
 import streamlit as st
 from supabase import create_client
-from fpdf import FPDF
+
+from reportlab.lib.pagesizes import letter
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak
+from reportlab.lib.units import inch
+
 
 APP_TITLE = "Lilly Safety Hub"
 st.set_page_config(page_title=APP_TITLE, layout="wide")
@@ -59,10 +65,8 @@ def now_iso() -> str:
 def upload_to_storage(file, folder: str) -> str | None:
     if not file:
         return None
-
     ext = file.name.split(".")[-1] if "." in file.name else "bin"
     path = f"{folder}/{uuid.uuid4().hex}.{ext}"
-
     supabase.storage.from_(SUPABASE_BUCKET).upload(
         path,
         file.getvalue(),
@@ -145,135 +149,110 @@ def fetch_site(start_date: date, end_date: date):
 
 
 # -------------------------
-# PDF GENERATOR (BULLETPROOF WRAP)
+# PDF (ReportLab) — robust wrapping
 # -------------------------
-class PDF(FPDF):
-    def header(self):
-        self.set_font("Helvetica", "B", 14)
-        self.cell(0, 10, "Lilly Safety Hub - Safety Report", ln=True)
-        self.ln(2)
-
-    def footer(self):
-        self.set_y(-15)
-        self.set_font("Helvetica", "", 9)
-        self.cell(0, 10, f"Page {self.page_no()}", align="C")
-
-
-def _force_wrap_points(s: str, chunk: int = 24) -> str:
-    """
-    Ensures no super-long token can exist without a space.
-    Inserts a space every `chunk` characters for any run without spaces.
-    """
-    if not s:
+def para(text: str) -> str:
+    """Escape minimal HTML for ReportLab Paragraph."""
+    if text is None:
         return ""
-
-    parts = s.split(" ")
-    fixed = []
-    for p in parts:
-        if len(p) <= chunk:
-            fixed.append(p)
-        else:
-            # break the long token into chunk-sized pieces
-            fixed.append(" ".join([p[i:i+chunk] for i in range(0, len(p), chunk)]))
-    return " ".join(fixed)
-
-def add_soft_breaks(s: str) -> str:
-    """
-    Add break opportunities after separators, then force breaks every N chars.
-    This prevents: 'Not enough horizontal space to render a single character'
-    """
-    if s is None:
-        return ""
-    s = str(s)
-
-    # Add spaces after common separators
+    s = str(text)
+    s = s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    # Add zero-width break opportunities after separators to help wrap long paths/IDs
     for ch in ["/", "_", "-", ".", ":", "?", "&", "=", "@"]:
-        s = s.replace(ch, ch + " ")
-
-    # Force wrap points even if no separators exist
-    s = _force_wrap_points(s, chunk=24)
+        s = s.replace(ch, ch + "&#8203;")  # zero-width space
     return s
 
-def pdf_safe(text) -> str:
-    t = add_soft_breaks("" if text is None else str(text))
-    # latin-1 safe for FPDF
-    return t.encode("latin-1", "replace").decode("latin-1")
+def build_pdf_report(report_title: str, start_date: date, end_date: date, personnel_rows, site_rows) -> bytes:
+    buf = BytesIO()
+    doc = SimpleDocTemplate(
+        buf,
+        pagesize=letter,
+        leftMargin=0.75 * inch,
+        rightMargin=0.75 * inch,
+        topMargin=0.75 * inch,
+        bottomMargin=0.75 * inch,
+        title="Lilly Safety Hub Report",
+    )
 
-def add_section_title(pdf: PDF, title: str):
-    pdf.set_font("Helvetica", "B", 12)
-    pdf.multi_cell(0, 7, pdf_safe(title))
-    pdf.ln(1)
+    styles = getSampleStyleSheet()
+    title_style = styles["Title"]
+    h_style = styles["Heading2"]
+    subh_style = styles["Heading3"]
+    body = styles["BodyText"]
 
-def add_kv(pdf: PDF, k: str, v: str):
-    # Safer than using a narrow fixed-width label cell
-    pdf.set_font("Helvetica", "B", 10)
-    pdf.multi_cell(0, 6, pdf_safe(k))
-    pdf.set_font("Helvetica", "", 10)
-    pdf.multi_cell(0, 6, pdf_safe(v))
-    pdf.ln(1)
+    body_wrap = ParagraphStyle(
+        "BodyWrap",
+        parent=body,
+        leading=13,
+        wordWrap="CJK",   # allows splitting long “words”
+    )
 
-def build_pdf(report_title: str, start_date: date, end_date: date, personnel_rows, site_rows) -> bytes:
-    pdf = PDF()
-    pdf.set_auto_page_break(auto=True, margin=12)
-    pdf.add_page()
+    story = []
 
-    pdf.set_font("Helvetica", "", 11)
-    pdf.multi_cell(0, 6, pdf_safe(report_title))
-    pdf.ln(2)
+    story.append(Paragraph(para("Lilly Safety Hub - Safety Report"), title_style))
+    story.append(Spacer(1, 8))
+    story.append(Paragraph(para(report_title), body_wrap))
+    story.append(Spacer(1, 10))
 
-    add_kv(pdf, "Date range", f"{iso(start_date)} to {iso(end_date)}")
-    add_kv(pdf, "Generated", now_iso())
+    story.append(Paragraph(para(f"<b>Date range:</b> {iso(start_date)} to {iso(end_date)}"), body_wrap))
+    story.append(Paragraph(para(f"<b>Generated:</b> {now_iso()}"), body_wrap))
+    story.append(Spacer(1, 12))
 
-    add_section_title(pdf, "Summary")
-    add_kv(pdf, "Personnel violations", str(len(personnel_rows)))
-    add_kv(pdf, "Site safety issues", str(len(site_rows)))
+    story.append(Paragraph(para("Summary"), h_style))
+    story.append(Paragraph(para(f"<b>Personnel violations:</b> {len(personnel_rows)}"), body_wrap))
+    story.append(Paragraph(para(f"<b>Site safety issues:</b> {len(site_rows)}"), body_wrap))
+    story.append(Spacer(1, 12))
 
-    add_section_title(pdf, "Personnel Safety Violations")
+    # Personnel section
+    story.append(Paragraph(para("Personnel Safety Violations"), h_style))
+    story.append(Spacer(1, 6))
     if not personnel_rows:
-        pdf.set_font("Helvetica", "", 10)
-        pdf.multi_cell(0, 6, "None recorded in this range.")
-        pdf.ln(2)
+        story.append(Paragraph(para("None recorded in this range."), body_wrap))
+        story.append(Spacer(1, 10))
     else:
         for r in personnel_rows:
-            pdf.set_font("Helvetica", "B", 10)
-            title = f"{r.get('date_event','')} | HH#{r.get('hard_hat','')} | {r.get('violation_type','')} | {r.get('severity','')}"
-            pdf.multi_cell(0, 6, pdf_safe(title))
-            pdf.set_font("Helvetica", "", 10)
+            header = f"{r.get('date_event','')} | HH#{r.get('hard_hat','')} | {r.get('violation_type','')} | {r.get('severity','')}"
+            story.append(Paragraph(para(f"<b>{header}</b>"), body_wrap))
 
             if r.get("company"):
-                add_kv(pdf, "Company", r.get("company"))
+                story.append(Paragraph(para(f"<b>Company:</b> {r.get('company')}"), body_wrap))
             if r.get("trade"):
-                add_kv(pdf, "Trade", r.get("trade"))
+                story.append(Paragraph(para(f"<b>Trade:</b> {r.get('trade')}"), body_wrap))
             if r.get("location"):
-                add_kv(pdf, "Location", r.get("location"))
+                story.append(Paragraph(para(f"<b>Location:</b> {r.get('location')}"), body_wrap))
 
-            add_kv(pdf, "What happened", r.get("description") or "")
+            story.append(Paragraph(para(f"<b>What happened:</b> {r.get('description') or ''}"), body_wrap))
+
             if r.get("corrective"):
-                add_kv(pdf, "Corrective action", r.get("corrective"))
+                story.append(Paragraph(para(f"<b>Corrective action:</b> {r.get('corrective')}"), body_wrap))
+
             if r.get("evidence_path"):
-                add_kv(pdf, "Evidence path", r.get("evidence_path"))
+                story.append(Paragraph(para(f"<b>Evidence path:</b> {r.get('evidence_path')}"), body_wrap))
 
-            pdf.ln(2)
+            story.append(Spacer(1, 10))
 
-    add_section_title(pdf, "Site Safety Issues")
+    story.append(PageBreak())
+
+    # Site section
+    story.append(Paragraph(para("Site Safety Issues"), h_style))
+    story.append(Spacer(1, 6))
     if not site_rows:
-        pdf.set_font("Helvetica", "", 10)
-        pdf.multi_cell(0, 6, "None recorded in this range.")
-        pdf.ln(2)
+        story.append(Paragraph(para("None recorded in this range."), body_wrap))
+        story.append(Spacer(1, 10))
     else:
         for r in site_rows:
-            pdf.set_font("Helvetica", "B", 10)
-            title = f"{r.get('date_event','')} | {r.get('company','')} | {r.get('building','')} | Floor {r.get('floor','')} | {r.get('risk_level','')}"
-            pdf.multi_cell(0, 6, pdf_safe(title))
-            pdf.set_font("Helvetica", "", 10)
+            header = f"{r.get('date_event','')} | {r.get('company','')} | {r.get('building','')} | Floor {r.get('floor','')} | {r.get('risk_level','')}"
+            story.append(Paragraph(para(f"<b>{header}</b>"), body_wrap))
 
-            add_kv(pdf, "Issue", r.get("issue") or "")
+            story.append(Paragraph(para(f"<b>Issue:</b> {r.get('issue') or ''}"), body_wrap))
+
             if r.get("photo_path"):
-                add_kv(pdf, "Photo path", r.get("photo_path"))
+                story.append(Paragraph(para(f"<b>Photo path:</b> {r.get('photo_path')}"), body_wrap))
 
-            pdf.ln(2)
+            story.append(Spacer(1, 10))
 
-    return pdf.output(dest="S").encode("latin-1")
+    doc.build(story)
+    return buf.getvalue()
 
 
 # -------------------------
@@ -283,14 +262,13 @@ require_login()
 
 st.title(APP_TITLE)
 st.success("Permanent storage: ON (Supabase DB via REST + Supabase Storage)")
-
 show_table_setup_help_if_needed()
 
 tabs = st.tabs(["Log Entries", "Reports"])
 
-# =========================
-# TAB 1 — LOG ENTRIES
-# =========================
+# -------------------------
+# TAB 1: LOG ENTRIES
+# -------------------------
 with tabs[0]:
     mode = st.radio(
         "Select Entry Type",
@@ -418,9 +396,9 @@ with tabs[0]:
                     st.code(str(e))
 
 
-# =========================
-# TAB 2 — REPORTS (PDF)
-# =========================
+# -------------------------
+# TAB 2: REPORTS (PDF)
+# -------------------------
 with tabs[1]:
     st.subheader("PDF Reports")
 
@@ -448,7 +426,7 @@ with tabs[1]:
             personnel_rows = fetch_personnel(start_date, end_date)
             site_rows = fetch_site(start_date, end_date)
 
-            pdf_bytes = build_pdf(title, start_date, end_date, personnel_rows, site_rows)
+            pdf_bytes = build_pdf_report(title, start_date, end_date, personnel_rows, site_rows)
 
             filename = f"lilly_safety_report_{iso(start_date)}_to_{iso(end_date)}.pdf"
             st.success("PDF created.")
